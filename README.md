@@ -62,9 +62,24 @@ pip install -r requirements.txt
 - `app/api/routes/webhook.py`: 웹훅 엔드포인트(`/webhook`) 정의, Step 1+2 오케스트레이션
 - `app/schemas/webhook.py`: 입력 스키마 (`platform`, `meta_info`, `submission_info`)
 - `app/schemas/analysis.py`: LLM 분석 결과 스키마 (approach/time_complexity/improvement/next_problem/better_code)
-- `app/core/config.py`: `.env` 기반 설정 로딩 (`OPENAI_API_KEY`, `OPENAI_MODEL_NAME` 등)
+- `app/core/config.py`: `.env` 기반 설정 로딩 (`OPENAI_API_KEY`, `OPENAI_MODEL_NAME`, `NOTION_TOKEN`, `NOTION_DATABASE_ID` 등)
 - `app/clients/openai_client.py`: OpenAI Async 클라이언트 래퍼
+- `app/clients/notion_client.py`: Notion AsyncClient 래퍼
 - `app/services/ai_service.py`: 프롬프트 빌드 및 LLM 호출 → `AnalysisResult` 생성 로직
+- `app/services/notion_service.py`: WebhookPayload + AnalysisResult를 기반으로 Notion 페이지 생성
+
+## 🧪 Testing
+
+- **테스트 실행**
+
+```bash
+pytest
+```
+
+- **주요 테스트 파일**
+  - `tests/test_webhook_api.py`: `/webhook` 엔드포인트 요청/응답 및 Validation 검증 (OpenAI 호출 mock)
+  - `tests/test_ai_service.py`: `build_prompt` 메시지 구조 및 `analyze_submission`의 `AnalysisResult` 반환 검증
+  - `tests/test_notion_client_service.py`: Notion 클라이언트 초기화 및 `save_to_notion`이 `pages.create`를 올바로 호출하는지 검증
 
 ## 🔄 PoC Pipeline Architecture
 현재 PoC(Proof of Concept)는 다음 3단계로 구성되며, FastAPI 서버가 중심 역할을 합니다.
