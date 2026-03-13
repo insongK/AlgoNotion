@@ -1,8 +1,12 @@
-from typing import Any, Dict
+from typing import Any, Dict, List, Type, TypeVar
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAIError
+from pydantic import BaseModel
 
 from app.core.config import get_settings
+
+
+T = TypeVar("T", bound=BaseModel)
 
 
 def get_openai_client() -> AsyncOpenAI:
@@ -12,19 +16,45 @@ def get_openai_client() -> AsyncOpenAI:
     return AsyncOpenAI(api_key=settings.openai_api_key)
 
 
-async def create_structured_analysis(prompt: str) -> Dict[str, Any]:
+async def create_structured_analysis(
+    messages: List[Dict[str, str]],
+    response_format: type[T],
+) -> T:
     """
-    LLM 호출을 담당하는 최소 래퍼.
-    - 실제 프로덕션에서는 프롬프트 템플릿/에러 처리/리트라이 등을 확장.
+    OpenAI의 beta.chat.completions.parse를 사용해
+    LLM 응답을 Pydantic 모델로 바로 파싱한다.
     """
     settings = get_settings()
     client = get_openai_client()
 
-    # TODO: responses.create의 정확한 파라미터는 requirements 및 실제 버전에 맞춰 조정
-    response = await client.responses.create(
-        model=settings.openai_model,
-        input=prompt,
-    )
+    try:
+        completion = await client.beta.chat.completions.parse(
+            model=settings.openai_model,
+            messages=messages,
+            response_format=response_format,
+        )
+    except OpenAIError as e:
+        # 인증/요금제/모델명 오류, 입력 포맷 문제 등 OpenAI 측 에러
+        raise RuntimeError(
+            "OpenAI chat.completions.parse 호출에 실패했습니다. "
+            "API 키, 네트워크 상태, 모델 이름(openai_model)을 확인하세요."
+        ) from e
+    except Exception as e:
+        # 네트워크 장애, 직렬화 문제 등 비예상 오류
+        raise RuntimeError(
+            "OpenAI API 호출 중 예기치 못한 오류가 발생했습니다."
+        ) from e
 
-    return response  # 상위 서비스 레이어에서 필요한 형태로 파싱
+    if not completion.choices:
+        raise RuntimeError("OpenAI 응답에 choices가 비어 있습니다.")
+
+    parsed = getattr(completion.choices[0].message, "parsed", None)
+    if parsed is None:
+        raise RuntimeError(
+            "OpenAI 응답에서 parsed 데이터를 찾을 수 없습니다. "
+            "response_format 설정과 모델 지원 여부를 확인하세요."
+        )
+
+    return parsed
+
 
