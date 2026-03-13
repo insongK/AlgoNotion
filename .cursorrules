@@ -1,0 +1,22 @@
+# Project Context
+이 프로젝트는 코딩테스트 정답 코드를 웹훅으로 수신하고(FastAPI), AI로 심층 분석한 뒤(OpenAI API), 노션 데이터베이스에 자동 기록하는(Notion API) 백엔드 파이프라인입니다. 
+
+# Tech Stack & Guidelines
+- **Language/Framework:** Python 3.10+, FastAPI, Uvicorn
+- **Architecture:** 단일 책임 원칙(SRP)을 준수하여 라우터, AI 서비스, Notion 서비스 등 역할을 모듈화할 것.
+- **Typing:** Pydantic을 활용하여 입출력 데이터의 Type Hinting을 엄격하게 적용할 것.
+- **Environment:** `OPENAI_API_KEY`, `NOTION_TOKEN`, `NOTION_DATABASE_ID` 등 민감한 정보는 절대 하드코딩하지 말고 `.env`와 `os.getenv`를 사용할 것.
+
+# Data Structures (Pydantic)
+- **Webhook Input:** `meta_info`(문제 정보)와 `submission_info`(코드 및 성능)를 분리하여 받을 것.
+- **LLM Output (Structured):** AI 분석 결과는 반드시 다음 5가지 필드를 포함하는 JSON 형태로 파싱하여 받을 것.
+  - `approach` (str): 100자 이내 요약
+  - `time_complexity` (str)
+  - `improvement` (str)
+  - `next_problem` (str)
+  - `better_code` (str)
+
+# Vibe Coding Style
+- 사용자(개발자)가 추상적인 요구를 하면, 코드를 뱉기 전에 먼저 구현 방향과 필요한 외부 라이브러리(`requirements.txt` 추가용)를 제안할 것.
+- 비동기(`async`/`await`) 처리를 기본으로 하여 API 호출(OpenAI, Notion) 시 병목이 발생하지 않도록 할 것.
+- 에러 발생 시 단순 회피 코드가 아닌, 근본적인 원인을 분석하고 구조적인 해결책을 제시할 것.
