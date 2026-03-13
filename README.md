@@ -73,7 +73,7 @@ pip install -r requirements.txt
 - **테스트 실행**
 
 ```bash
-pytest
+python -m pytest
 ```
 
 - **주요 테스트 파일**
@@ -98,7 +98,7 @@ pytest
   - `next_problem`: 다음 추천 문제 (플랫폼, 문제 번호/제목 포함)
   - `better_code`: 더 좋은 모범 답안 코드
 
-현재 PoC 단계에서는 `app/services/ai_service.py`에서 OpenAI 응답을 더미 데이터로 매핑하고 있으며, 이후 `responses.create`의 JSON 구조화를 활용해 위 필드를 직접 파싱하도록 확장할 예정입니다.
+현재는 OpenAI Python SDK의 `client.beta.chat.completions.parse`를 사용해 위 5개 필드를 **Pydantic 모델(`AnalysisResult`)로 직접 파싱**하여 반환합니다.
 
 ### Step 3: Notion 자동 기록 (Notion API)
 원본 데이터와 AI의 분석 결과를 조합하여 Notion Database에 체계적으로 적재합니다.

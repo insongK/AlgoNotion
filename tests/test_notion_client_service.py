@@ -1,10 +1,10 @@
 from typing import Any, Dict
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.clients.notion_client import get_notion_client
-from app.core.config import Settings
+from app.core.config import get_settings
 from app.schemas.analysis import AnalysisResult
 from app.schemas.webhook import MetaInfo, SubmissionInfo, WebhookPayload
 from app.services.notion_service import save_to_notion
@@ -40,18 +40,9 @@ def test_get_notion_client_raises_when_token_missing(monkeypatch: pytest.MonkeyP
     """
     NOTION_TOKEN이 설정되지 않은 경우 get_notion_client가 ValueError를 발생시키는지 확인.
     """
-    from app import core  # type: ignore
-    from app.core import config
-
-    def _fake_settings() -> Settings:
-        return Settings(
-            openai_api_key="dummy",
-            openai_model="gpt-4o-mini",
-            notion_token=None,
-            notion_database_id=None,
-        )
-
-    monkeypatch.setattr(config, "get_settings", _fake_settings)
+    monkeypatch.setenv("NOTION_TOKEN", "")
+    # .env/.환경변수 변경이 반영되도록 Settings 캐시 초기화
+    get_settings.cache_clear()
 
     with pytest.raises(ValueError):
         get_notion_client()
@@ -64,26 +55,20 @@ async def test_save_to_notion_calls_pages_create(monkeypatch: pytest.MonkeyPatch
     save_to_notion이 Notion AsyncClient의 pages.create를 한 번 호출하는지 확인.
     실제 네트워크 호출은 mock 처리한다.
     """
-    from app.services import notion_service
-
     payload, analysis = _make_sample_payload_and_analysis()
 
-    # 설정 mock
-    def _fake_settings() -> Settings:
-        return Settings(
-            openai_api_key="dummy",
-            openai_model="gpt-4o-mini",
-            notion_token="dummy-token",
-            notion_database_id="dummy-db-id",
-        )
-
-    monkeypatch.setattr(notion_service, "get_settings", _fake_settings)
+    monkeypatch.setenv("NOTION_TOKEN", "dummy-token")
+    monkeypatch.setenv("NOTION_DATABASE_ID", "dummy-db-id")
+    get_settings.cache_clear()
 
     # 클라이언트 및 pages.create mock
     fake_client = MagicMock()
     fake_client.pages.create = AsyncMock()
 
-    monkeypatch.setattr(notion_service, "get_notion_client", lambda: fake_client)
+    monkeypatch.setattr(
+        "app.services.notion_service.get_notion_client",
+        lambda: fake_client,
+    )
 
     await save_to_notion(payload, analysis)
 

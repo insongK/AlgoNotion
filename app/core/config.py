@@ -1,23 +1,16 @@
 from functools import lru_cache
 
-from pydantic_settings import BaseSettings
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    openai_api_key: str | None = None
-    openai_model: str = "gpt-4o-mini"
-    notion_token: str | None = None
-    notion_database_id: str | None = None
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    class Config:
-        env_prefix = ""
-        env_file = ".env"
-        fields = {
-            "openai_api_key": {"env": "OPENAI_API_KEY"},
-            "openai_model": {"env": "OPENAI_MODEL_NAME"},
-            "notion_token": {"env": "NOTION_TOKEN"},
-            "notion_database_id": {"env": "NOTION_DATABASE_ID"},
-        }
+    openai_api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY")
+    openai_model: str = Field(default="gpt-4o-mini", validation_alias="OPENAI_MODEL_NAME")
+    notion_token: str | None = Field(default=None, validation_alias="NOTION_TOKEN")
+    notion_database_id: str | None = Field(default=None, validation_alias="NOTION_DATABASE_ID")
 
 
 @lru_cache()
