@@ -9,6 +9,24 @@
 - **Integration:** Notion API (`notion-client`)
 - **Frontend (Planned):** Chrome Extension Manifest V3
 
+## 📦 Requirements & Installation
+
+- **Python**: 3.10 이상
+- **의존성 설치**:
+
+```bash
+pip install -r requirements.txt
+```
+
+## ⚙️ Environment Variables
+
+`.env` 파일 또는 시스템 환경변수로 아래 값을 설정해야 합니다.
+
+- `OPENAI_API_KEY`: OpenAI API 키 (필수)
+- `OPENAI_MODEL_NAME`: 사용할 LLM 모델명 (기본값: `gpt-4o-mini`)
+- `NOTION_TOKEN`: Notion 통합 토큰 (Step 3 구현 시 사용)
+- `NOTION_DATABASE_ID`: 분석 결과를 적재할 Notion Database ID (Step 3 구현 시 사용)
+
 ## 📁 Directory Structure
 
 ```text
@@ -38,6 +56,16 @@
 └── README.md
 ```
 
+### 주요 모듈 역할
+
+- `app/main.py`: FastAPI 앱 생성 및 라우터(`api/routes/webhook.py`) 등록
+- `app/api/routes/webhook.py`: 웹훅 엔드포인트(`/webhook`) 정의, Step 1+2 오케스트레이션
+- `app/schemas/webhook.py`: 입력 스키마 (`platform`, `meta_info`, `submission_info`)
+- `app/schemas/analysis.py`: LLM 분석 결과 스키마 (approach/time_complexity/improvement/next_problem/better_code)
+- `app/core/config.py`: `.env` 기반 설정 로딩 (`OPENAI_API_KEY`, `OPENAI_MODEL_NAME` 등)
+- `app/clients/openai_client.py`: OpenAI Async 클라이언트 래퍼
+- `app/services/ai_service.py`: 프롬프트 빌드 및 LLM 호출 → `AnalysisResult` 생성 로직
+
 ## 🔄 PoC Pipeline Architecture
 현재 PoC(Proof of Concept)는 다음 3단계로 구성되며, FastAPI 서버가 중심 역할을 합니다.
 
@@ -54,6 +82,8 @@
   - `improvement`: 부족한 부분 및 구조적 개선점
   - `next_problem`: 다음 추천 문제 (플랫폼, 문제 번호/제목 포함)
   - `better_code`: 더 좋은 모범 답안 코드
+
+현재 PoC 단계에서는 `app/services/ai_service.py`에서 OpenAI 응답을 더미 데이터로 매핑하고 있으며, 이후 `responses.create`의 JSON 구조화를 활용해 위 필드를 직접 파싱하도록 확장할 예정입니다.
 
 ### Step 3: Notion 자동 기록 (Notion API)
 원본 데이터와 AI의 분석 결과를 조합하여 Notion Database에 체계적으로 적재합니다.
