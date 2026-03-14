@@ -15,8 +15,13 @@ class SubmissionInfo(BaseModel):
     time: int | None = None
 
 
+class NotionSettings(BaseModel):
+    token: str
+    database_id: str
+
+
 class WebhookPayload(BaseModel):
-    platform: str = Field(..., description="ex) baekjoon, programmers 등")
+    platform: str = Field(..., description="ex) baekjoon, programmers")
     meta_info: MetaInfo
     submission_info: SubmissionInfo
-
+    notion_settings: NotionSettings | None = None

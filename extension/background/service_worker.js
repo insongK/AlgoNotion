@@ -4,6 +4,9 @@ import { normalizeLanguage } from '../scripts/language_normalizer.js';
 import { buildWebhookPayload } from '../scripts/payload_builder.js';
 
 const DEFAULT_WEBHOOK_BASE = 'http://localhost:8000';
+const BACKEND_URL_KEY = 'algonotion_backend_url';
+const NOTION_TOKEN_KEY = 'algonotion_notion_token';
+const NOTION_DATABASE_ID_KEY = 'algonotion_notion_database_id';
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('[AlgoNotion] Message received in background:', {
@@ -54,6 +57,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const language = normalizeLanguage(payload.language);
           console.log('[AlgoNotion] [2/4] 정규화된 언어:', language);
 
+          const notionSettings = await getNotionSettings();
+          if (!notionSettings.notionToken || !notionSettings.notionDatabaseId) {
+            throw new Error('Notion settings are missing. Configure token and database ID in the extension options.');
+          }
+
           // 3) WebhookPayload 조립
           console.log('[AlgoNotion] [3/4] WebhookPayload 조립 중...');
           const webhookPayload = buildWebhookPayload({
@@ -65,6 +73,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             code: payload.code,
             time: payload.time,
             memory: payload.memory,
+            notionToken: notionSettings.notionToken,
+            notionDatabaseId: notionSettings.notionDatabaseId,
           });
           console.log('[AlgoNotion] [3/4] payload 준비 완료 (meta_info.title:', webhookPayload.meta_info.title, ')');
 
@@ -102,9 +112,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
  */
 async function getWebhookBaseUrl() {
   try {
-    const st = await chrome.storage.sync.get('backendUrl');
-    return (st.backendUrl && st.backendUrl.trim()) ? st.backendUrl.trim() : DEFAULT_WEBHOOK_BASE;
+    const st = await chrome.storage.sync.get(BACKEND_URL_KEY);
+    return (st[BACKEND_URL_KEY] && st[BACKEND_URL_KEY].trim()) ? st[BACKEND_URL_KEY].trim() : DEFAULT_WEBHOOK_BASE;
   } catch {
     return DEFAULT_WEBHOOK_BASE;
+  }
+}
+
+async function getNotionSettings() {
+  try {
+    const st = await chrome.storage.sync.get([NOTION_TOKEN_KEY, NOTION_DATABASE_ID_KEY]);
+    return {
+      notionToken: (st[NOTION_TOKEN_KEY] || '').trim(),
+      notionDatabaseId: (st[NOTION_DATABASE_ID_KEY] || '').trim(),
+    };
+  } catch {
+    return {
+      notionToken: '',
+      notionDatabaseId: '',
+    };
   }
 }
