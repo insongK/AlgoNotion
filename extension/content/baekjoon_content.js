@@ -1,80 +1,115 @@
-// DOM 선택자 상수들: 나중에 구조가 바뀌더라도 이 부분만 수정할 수 있도록 분리한다.
-const STATUS_TABLE_SELECTOR = '#status-table'; // 채점 현황 테이블 전체
-const TABLE_BODY_ROW_SELECTOR = 'tbody tr'; // 각 제출 기록 행
-const SUBMISSION_ID_CELL_SELECTOR = 'td:nth-child(1)'; // 제출 번호가 들어있는 셀 (예시)
-const PROBLEM_ID_CELL_SELECTOR = 'td:nth-child(3)'; // 문제 번호가 들어있는 셀 (예시)
-const LANGUAGE_CELL_SELECTOR = 'td:nth-child(7)'; // 언어가 들어있는 셀 (예시)
-const TIME_CELL_SELECTOR = 'td:nth-child(9)'; // 실행 시간이 들어있는 셀 (예시)
-const MEMORY_CELL_SELECTOR = 'td:nth-child(8)'; // 메모리가 들어있는 셀 (예시)
-const RESULT_CELL_SELECTOR = 'td:nth-child(4)'; // 결과(맞았습니다!! 등)가 들어있는 셀 (예시)
+// DOM 선택자: 테이블만 고정하고, 컬럼 인덱스는 헤더 파싱으로 동적 결정
+const STATUS_TABLE_SELECTOR = "#status-table";
+const TABLE_BODY_ROW_SELECTOR = "tbody tr";
 
-// "맞았습니다!!" 또는 AC 상태를 감지하기 위한 키워드/클래스
-const AC_TEXT_KEYWORD = '맞았습니다!!';
-const AC_CLASS_NAME = 'ac'; // 백준에서 사용하는 AC 결과용 클래스 (예시)
+// 헤더 텍스트 → 컬럼 키 매핑 (공백/대소문자 무시하고 매칭)
+const HEADER_KEYS = {
+  "제출 번호": "submissionId",
+  문제: "problemId",
+  결과: "result",
+  메모리: "memory",
+  시간: "time",
+  언어: "language",
+};
 
-// 이미 처리한 submissionId를 기억해 두어 중복 전송을 막는다.
+const AC_TEXT_KEYWORD = "맞았습니다!!";
+const AC_CLASS_NAME = "ac";
+
 const processedSubmissionIds = new Set();
-
-// interval 중복 실행을 막기 위한 플래그와 핸들
 let pollingIntervalId = null;
 
 /**
- * 현재 페이지가 백준 채점 현황(Status) 페이지인지 대략적으로 판별한다.
+ * 테이블의 첫 번째 행(thead tr 또는 tbody의 첫 행)에서 헤더 텍스트를 읽어
+ * '제출 번호', '문제', '결과', '메모리', '시간', '언어'의 컬럼 인덱스(1-based) 맵을 반환한다.
+ * @param {HTMLTableElement} table
+ * @returns {Record<string, number> | null} { submissionId: 1, problemId: 3, ... } 또는 null
  */
-function isBaekjoonStatusPage() {
-  return window.location.hostname === 'www.acmicpc.net' &&
-    window.location.pathname.startsWith('/status');
+function parseTableHeader(table) {
+  const theadRow = table.querySelector("thead tr");
+  const headerRow = theadRow || table.querySelector("tbody tr");
+  if (!headerRow) return null;
+
+  const cells = headerRow.querySelectorAll("th, td");
+  const indexMap = {};
+
+  for (let i = 0; i < cells.length; i++) {
+    const text = (cells[i].textContent || "").trim();
+    for (const [headerLabel, key] of Object.entries(HEADER_KEYS)) {
+      if (text === headerLabel) {
+        indexMap[key] = i; // 0-based 인덱스로 저장 (querySelectorAll 결과와 일치)
+        break;
+      }
+    }
+  }
+
+  const required = [
+    "submissionId",
+    "problemId",
+    "result",
+    "memory",
+    "time",
+    "language",
+  ];
+  const hasAll = required.every((k) => indexMap[k] !== undefined);
+  return hasAll ? indexMap : null;
 }
 
 /**
- * 한 행(row)에서 결과가 "AC"인지 판별한다.
+ * 숫자만 추출한다. "128 MB" → 128, "12 ms" → 12
+ * @param {string} raw
+ * @returns {number}
  */
-function isRowAccepted(row) {
-  const resultCell = row.querySelector(RESULT_CELL_SELECTOR);
-  if (!resultCell) {
-    return false;
-  }
+function extractNumber(raw) {
+  const digits = (raw || "").replace(/[^0-9]/g, "");
+  const num = parseInt(digits, 10);
+  return Number.isNaN(num) ? 0 : num;
+}
 
-  const text = resultCell.textContent || '';
+function isBaekjoonStatusPage() {
+  return (
+    window.location.hostname === "www.acmicpc.net" &&
+    window.location.pathname.startsWith("/status")
+  );
+}
+
+function isRowAccepted(row, colMap) {
+  const idx = colMap.result;
+  const cells = row.querySelectorAll("td");
+  const resultCell = cells[idx];
+  if (!resultCell) return false;
+
+  const text = (resultCell.textContent || "").trim();
   const hasAcText = text.includes(AC_TEXT_KEYWORD);
   const hasAcClass = resultCell.classList.contains(AC_CLASS_NAME);
-
   return hasAcText || hasAcClass;
 }
 
-/**
- * 한 행(row)이 현재 로그인한 유저의 제출인지 판별한다.
- * - 실제 구현 시에는 로그인 영역 또는 테이블 내 사용자 ID 셀을 파싱해 비교해야 한다.
- * - 여기서는 TODO로 남겨두고, 기본적으로는 true를 반환해 전체 제출을 대상으로 동작하게 한다.
- */
 function isRowFromCurrentUser(_row) {
-  // TODO: 백준 DOM에서 현재 사용자 ID와 row의 사용자 ID를 비교하도록 구현
   return true;
 }
 
 /**
- * 한 행(row)에서 제출 메타데이터를 추출한다.
+ * 한 행에서 메타데이터 추출. colMap은 0-based 인덱스 맵.
  */
-function extractSubmissionMeta(row) {
-  const submissionIdCell = row.querySelector(SUBMISSION_ID_CELL_SELECTOR);
-  const problemIdCell = row.querySelector(PROBLEM_ID_CELL_SELECTOR);
-  const languageCell = row.querySelector(LANGUAGE_CELL_SELECTOR);
-  const timeCell = row.querySelector(TIME_CELL_SELECTOR);
-  const memoryCell = row.querySelector(MEMORY_CELL_SELECTOR);
+function extractSubmissionMeta(row, colMap) {
+  const cells = row.querySelectorAll("td");
+  if (!cells.length) return null;
 
-  if (!submissionIdCell || !problemIdCell || !languageCell || !timeCell || !memoryCell) {
-    return null;
-  }
+  const get = (key) => {
+    const i = colMap[key];
+    return i !== undefined ? (cells[i].textContent || "").trim() : "";
+  };
 
-  const submissionId = (submissionIdCell.textContent || '').trim();
-  const problemId = (problemIdCell.textContent || '').trim();
-  const language = (languageCell.textContent || '').trim();
-  const time = parseInt((timeCell.textContent || '').trim(), 10);
-  const memory = parseInt((memoryCell.textContent || '').trim(), 10);
+  const submissionId = get("submissionId");
+  const problemId = get("problemId");
+  const language = get("language");
+  const timeRaw = get("time");
+  const memoryRaw = get("memory");
 
-  if (!submissionId || !problemId || !language || Number.isNaN(time) || Number.isNaN(memory)) {
-    return null;
-  }
+  if (!submissionId || !problemId || !language) return null;
+
+  const time = extractNumber(timeRaw);
+  const memory = extractNumber(memoryRaw);
 
   return {
     submissionId,
@@ -86,59 +121,71 @@ function extractSubmissionMeta(row) {
 }
 
 /**
- * 채점 현황 테이블을 순회하며 새로운 AC 제출을 발견하면 background로 전송한다.
+ * submissionId로 소스 코드를 다운로드한다.
+ * @param {string} submissionId
+ * @returns {Promise<string>}
+ */
+async function fetchSourceCode(submissionId) {
+  const url = `https://www.acmicpc.net/source/download/${submissionId}`;
+  const res = await fetch(url, { credentials: "include" });
+  if (!res.ok) throw new Error(`Source download failed: ${res.status}`);
+  return res.text();
+}
+
+/**
+ * 채점 현황 테이블을 순회하며 새로운 AC 제출을 발견하면
+ * 소스 코드를 다운로드한 뒤 meta에 합쳐 background로 전송한다.
  */
 function pollStatusTable() {
   const table = document.querySelector(STATUS_TABLE_SELECTOR);
-  if (!table) {
-    // 테이블을 찾지 못한 경우, 조용히 패스하고 다음 interval에서 다시 시도한다.
+  if (!table) return;
+
+  const colMap = parseTableHeader(table);
+  if (!colMap) {
+    console.warn("[AlgoNotion] status table header could not be parsed.");
     return;
   }
 
   const rows = table.querySelectorAll(TABLE_BODY_ROW_SELECTOR);
+  // 헤더가 tbody 첫 행일 수 있으므로, th가 있는 행은 스킵
   rows.forEach((row) => {
-    if (!isRowFromCurrentUser(row)) {
-      return;
-    }
+    if (row.querySelector("th")) return; // 헤더 행 스킵
+    if (!isRowFromCurrentUser(row)) return;
+    if (!isRowAccepted(row, colMap)) return;
 
-    if (!isRowAccepted(row)) {
-      return;
-    }
-
-    const meta = extractSubmissionMeta(row);
-    if (!meta) {
-      return;
-    }
-
-    if (processedSubmissionIds.has(meta.submissionId)) {
-      // 이미 처리한 제출이면 다시 전송하지 않는다.
-      return;
-    }
+    const meta = extractSubmissionMeta(row, colMap);
+    if (!meta) return;
+    if (processedSubmissionIds.has(meta.submissionId)) return;
 
     processedSubmissionIds.add(meta.submissionId);
 
-    const message = {
-      type: 'BAEKJOON_AC_SUBMISSION',
-      payload: meta,
-    };
+    (async () => {
+      try {
+        const code = await fetchSourceCode(meta.submissionId);
+        const payload = { ...meta, code };
 
-    chrome.runtime.sendMessage(message);
+        const message = {
+          type: "BAEKJOON_AC_SUBMISSION",
+          payload,
+        };
+        chrome.runtime.sendMessage(message);
+      } catch (err) {
+        console.warn(
+          "[AlgoNotion] Failed to fetch source for",
+          meta.submissionId,
+          err,
+        );
+        processedSubmissionIds.delete(meta.submissionId);
+      }
+    })();
   });
 }
 
-/**
- * 폴링을 시작한다. (2초 간격)
- */
 function startPolling() {
-  if (pollingIntervalId !== null) {
-    return;
-  }
-
+  if (pollingIntervalId !== null) return;
   pollingIntervalId = window.setInterval(pollStatusTable, 2000);
 }
 
-// 페이지가 백준 채점 현황 페이지일 때만 폴링을 시작한다.
 if (isBaekjoonStatusPage()) {
   startPolling();
 }
-

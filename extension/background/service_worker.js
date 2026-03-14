@@ -1,33 +1,89 @@
-// content script로부터 전달되는 메시지를 수신하는 Service Worker 뼈대.
-// 추후 여기에 Baekjoon 소스 다운로드, solved.ac 호출, 백엔드 웹훅 전송 로직을 추가한다.
+// Content script로부터 전달되는 메시지 수신 → 소스 확인 후 solved.ac 보강 → 웹훅 전송
+import { fetchSolvedAcProblem, postToBackendWebhook } from '../scripts/api_client.js';
+import { normalizeLanguage } from '../scripts/language_normalizer.js';
+import { buildWebhookPayload } from '../scripts/payload_builder.js';
+
+const DEFAULT_WEBHOOK_BASE = 'http://localhost:8000';
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // 메시지 타입에 따라 분기할 수 있도록 switch 구문을 사용한다.
   switch (message?.type) {
     case 'BAEKJOON_AC_SUBMISSION': {
       const payload = message.payload || {};
 
-      // TODO: 여기에서 Baekjoon 소스 코드 다운로드 → solved.ac 메타데이터 조회 →
-      //       언어 정규화 → 백엔드 웹훅 호출 로직을 순차적으로 연결할 예정.
-      // 현재는 전달된 payload를 예쁘게 로그로만 출력한다.
-      // eslint-disable-next-line no-console
-      console.log('[AlgoNotion][BAEKJOON_AC_SUBMISSION]', {
-        from: sender?.tab?.url,
-        submissionId: payload.submissionId,
-        problemId: payload.problemId,
-        language: payload.language,
-        time: payload.time,
-        memory: payload.memory,
-      });
+      if (!payload.code) {
+        console.warn('[AlgoNotion] BAEKJOON_AC_SUBMISSION payload has no code, skip.');
+        return false;
+      }
 
-      break;
+      (async () => {
+        try {
+          console.log('[AlgoNotion] ─── AC 제출 처리 시작 ───');
+          console.log('[AlgoNotion] from:', sender?.tab?.url);
+          console.log('[AlgoNotion] submissionId:', payload.submissionId, 'problemId:', payload.problemId);
+
+          // 1) solved.ac에서 문제 제목·티어 조회
+          let titleKo = '';
+          let level = null;
+          try {
+            console.log('[AlgoNotion] [1/4] solved.ac API 호출 중...');
+            const solved = await fetchSolvedAcProblem(payload.problemId);
+            titleKo = solved.titleKo;
+            level = solved.level;
+            console.log('[AlgoNotion] [1/4] solved.ac OK → titleKo:', titleKo || '(없음)', 'level:', level);
+          } catch (e) {
+            console.warn('[AlgoNotion] [1/4] solved.ac 실패 (계속 진행):', e.message);
+          }
+
+          // 2) 언어 정규화
+          console.log('[AlgoNotion] [2/4] 언어 정규화... raw:', payload.language);
+          const language = normalizeLanguage(payload.language);
+          console.log('[AlgoNotion] [2/4] 정규화된 언어:', language);
+
+          // 3) WebhookPayload 조립
+          console.log('[AlgoNotion] [3/4] WebhookPayload 조립 중...');
+          const webhookPayload = buildWebhookPayload({
+            platform: 'baekjoon',
+            problemId: payload.problemId,
+            title: titleKo,
+            level,
+            language,
+            code: payload.code,
+            time: payload.time,
+            memory: payload.memory,
+          });
+          console.log('[AlgoNotion] [3/4] payload 준비 완료 (meta_info.title:', webhookPayload.meta_info.title, ')');
+
+          // 4) 백엔드 웹훅 전송
+          const baseUrl = await getWebhookBaseUrl();
+          const webhookUrl = baseUrl.replace(/\/?$/, '');
+          console.log('[AlgoNotion] [4/4] 백엔드 전송 →', webhookUrl + '/webhook');
+          await postToBackendWebhook(webhookUrl, webhookPayload);
+          console.log('[AlgoNotion] [4/4] 백엔드 전송 완료.');
+          console.log('[AlgoNotion] ─── AC 제출 처리 완료 ───');
+        } catch (err) {
+          console.error('[AlgoNotion] ─── AC 제출 처리 실패 ───');
+          console.error('[AlgoNotion]', err.message);
+          console.error(err);
+        }
+      })();
+
+      return false;
     }
     default:
-      // 다른 타입의 메시지는 현재는 처리하지 않고 무시한다.
       break;
   }
-
-  // async sendResponse를 사용하지 않으므로 false를 반환해 리스너 수명을 종료한다.
   return false;
 });
 
+/**
+ * 옵션에서 저장한 백엔드 URL을 반환한다. 없으면 기본값.
+ * @returns {Promise<string>}
+ */
+async function getWebhookBaseUrl() {
+  try {
+    const st = await chrome.storage.sync.get('backendUrl');
+    return (st.backendUrl && st.backendUrl.trim()) ? st.backendUrl.trim() : DEFAULT_WEBHOOK_BASE;
+  } catch {
+    return DEFAULT_WEBHOOK_BASE;
+  }
+}
