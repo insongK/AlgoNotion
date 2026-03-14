@@ -6,12 +6,26 @@ import { buildWebhookPayload } from '../scripts/payload_builder.js';
 const DEFAULT_WEBHOOK_BASE = 'http://localhost:8000';
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log('[AlgoNotion] Message received in background:', {
+    type: message?.type,
+    senderUrl: sender?.tab?.url,
+    payloadKeys: Object.keys(message?.payload || {}),
+    submissionId: message?.payload?.submissionId,
+    problemId: message?.payload?.problemId,
+    codeLength: typeof message?.payload?.code === 'string' ? message.payload.code.length : null,
+    codePreview: typeof message?.payload?.code === 'string' ? message.payload.code.slice(0, 120) : null,
+  });
+
   switch (message?.type) {
     case 'BAEKJOON_AC_SUBMISSION': {
       const payload = message.payload || {};
 
       if (!payload.code) {
-        console.warn('[AlgoNotion] BAEKJOON_AC_SUBMISSION payload has no code, skip.');
+        console.warn('[AlgoNotion] BAEKJOON_AC_SUBMISSION payload has no code, skip.', {
+          submissionId: payload.submissionId,
+          problemId: payload.problemId,
+          payload,
+        });
         return false;
       }
 

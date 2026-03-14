@@ -15,8 +15,16 @@ const HEADER_KEYS = {
 const AC_TEXT_KEYWORD = "맞았습니다!!";
 const AC_CLASS_NAME = "ac";
 
+const SOURCE_FETCH_MAX_RETRIES = 5;
+const SOURCE_FETCH_RETRY_DELAYS_MS = [1000, 1500, 2500, 4000, 6000];
+
 const processedSubmissionIds = new Set();
+const uploadButtonStateBySubmissionId = new Map();
 let pollingIntervalId = null;
+
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
 
 /**
  * 테이블의 첫 번째 행(thead tr 또는 tbody의 첫 행)에서 헤더 텍스트를 읽어
@@ -70,6 +78,275 @@ function isBaekjoonStatusPage() {
     window.location.hostname === "www.acmicpc.net" &&
     window.location.pathname.startsWith("/status")
   );
+}
+
+function isBaekjoonSubmitPage() {
+  return (
+    window.location.hostname === "www.acmicpc.net" &&
+    window.location.pathname.startsWith("/submit/")
+  );
+}
+
+function extractTextFromElement(el) {
+  if (!el) return "";
+  if ("value" in el && typeof el.value === "string") {
+    return el.value;
+  }
+  return (el.textContent || "").trim();
+}
+
+function extractCodeFromCodeMirror(root) {
+  if (!root) return "";
+  const lines = root.querySelectorAll(".CodeMirror-line, .cm-line");
+  if (!lines.length) return "";
+  return Array.from(lines)
+    .map((line) => line.textContent || "")
+    .join("\n")
+    .trim();
+}
+
+function extractCodeFromAce(root) {
+  if (!root) return "";
+  const lines = root.querySelectorAll(".ace_line");
+  if (!lines.length) return "";
+  return Array.from(lines)
+    .map((line) => line.textContent || "")
+    .join("\n")
+    .trim();
+}
+
+function extractSubmitPageCodeFromDocument(root = document) {
+  const directSelectors = [
+    "textarea#source",
+    "textarea[name='source']",
+    "#source",
+    "pre.prettyprint",
+    "pre code",
+    ".source-code",
+  ];
+
+  for (const selector of directSelectors) {
+    const el = root.querySelector(selector);
+    const text = extractTextFromElement(el);
+    if (text.trim()) {
+      return text;
+    }
+  }
+
+  const codeMirrorRoot = root.querySelector(".CodeMirror");
+  const codeMirrorText = extractCodeFromCodeMirror(codeMirrorRoot);
+  if (codeMirrorText) {
+    return codeMirrorText;
+  }
+
+  const aceRoot = root.querySelector(".ace_editor");
+  const aceText = extractCodeFromAce(aceRoot);
+  if (aceText) {
+    return aceText;
+  }
+
+  return "";
+}
+
+function extractSubmitPageCode() {
+  return extractSubmitPageCodeFromDocument(document);
+}
+
+function extractSubmitPageMeta() {
+  const match = window.location.pathname.match(/^\/submit\/(\d+)\/(\d+)/);
+  if (!match) return null;
+
+  const [, problemId, submissionId] = match;
+  const languageSelect =
+    document.querySelector("select#language") ||
+    document.querySelector("select[name='language']");
+  const selectedLanguage =
+    languageSelect?.selectedOptions?.[0]?.textContent ||
+    languageSelect?.value ||
+    "";
+
+  return {
+    submissionId,
+    problemId,
+    language: selectedLanguage.trim(),
+    time: null,
+    memory: null,
+  };
+}
+
+async function fetchSourceCodeFromSubmitPage(problemId, submissionId) {
+  const url = `https://www.acmicpc.net/submit/${problemId}/${submissionId}`;
+  console.log("[AlgoNotion] Fetching submit page fallback:", { problemId, submissionId, url });
+
+  const res = await fetch(url, {
+    credentials: "include",
+    cache: "no-store",
+  });
+  const html = await res.text();
+
+  console.log("[AlgoNotion] Submit page fallback response:", {
+    problemId,
+    submissionId,
+    status: res.status,
+    ok: res.ok,
+    redirected: res.redirected,
+    finalUrl: res.url,
+    contentType: res.headers.get("content-type"),
+    htmlLength: html.length,
+    htmlPreview: html.slice(0, 120),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Submit page fetch failed: ${res.status}`);
+  }
+
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  const code = extractSubmitPageCodeFromDocument(parsed);
+
+  console.log("[AlgoNotion] Submit page fallback extraction:", {
+    problemId,
+    submissionId,
+    codeLength: code.length,
+    codePreview: code.slice(0, 120),
+  });
+
+  if (!code.trim()) {
+    throw new Error("Submit page fallback returned an empty code body");
+  }
+
+  return code;
+}
+
+function sendSubmissionMessage(meta, code, source) {
+  const payload = { ...meta, code };
+  console.log("[AlgoNotion] Sending message to background:", {
+    source,
+    submissionId: meta.submissionId,
+    codeLength: code.length,
+    codePreview: code.slice(0, 120),
+  });
+
+  chrome.runtime.sendMessage({
+    type: "BAEKJOON_AC_SUBMISSION",
+    payload,
+  });
+}
+
+function getUploadButtonState(submissionId) {
+  return uploadButtonStateBySubmissionId.get(submissionId) || "idle";
+}
+
+function setUploadButtonState(submissionId, state) {
+  uploadButtonStateBySubmissionId.set(submissionId, state);
+}
+
+function ensureUploadButton(row, meta, colMap) {
+  const cells = row.querySelectorAll("td");
+  const resultCell = cells[colMap.result];
+  if (!resultCell) return;
+  if (resultCell.querySelector(".algonotion-upload-btn")) return;
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "algonotion-upload-btn";
+  button.textContent = "Notion 업로드";
+  button.style.marginLeft = "8px";
+  button.style.padding = "2px 8px";
+  button.style.fontSize = "12px";
+  button.style.cursor = "pointer";
+  button.style.border = "1px solid #2b6cb0";
+  button.style.borderRadius = "4px";
+  button.style.background = "#fff";
+  button.style.color = "#2b6cb0";
+
+  const syncButtonUI = () => {
+    const state = getUploadButtonState(meta.submissionId);
+    if (state === "uploading") {
+      button.disabled = true;
+      button.textContent = "업로드 중...";
+      return;
+    }
+    if (state === "done") {
+      button.disabled = true;
+      button.textContent = "업로드 완료";
+      button.style.borderColor = "#2f855a";
+      button.style.color = "#2f855a";
+      return;
+    }
+    if (state === "failed") {
+      button.disabled = false;
+      button.textContent = "다시 업로드";
+      button.style.borderColor = "#c53030";
+      button.style.color = "#c53030";
+      return;
+    }
+
+    button.disabled = false;
+    button.textContent = "Notion 업로드";
+    button.style.borderColor = "#2b6cb0";
+    button.style.color = "#2b6cb0";
+  };
+
+  button.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (getUploadButtonState(meta.submissionId) === "uploading") return;
+
+    try {
+      setUploadButtonState(meta.submissionId, "uploading");
+      syncButtonUI();
+
+      let code;
+      try {
+        console.log("[AlgoNotion] Trying submit page fallback first.", {
+          submissionId: meta.submissionId,
+          problemId: meta.problemId,
+        });
+        code = await fetchSourceCodeFromSubmitPage(meta.problemId, meta.submissionId);
+      } catch (submitErr) {
+        console.warn("[AlgoNotion] Submit page fallback failed, trying source download path.", {
+          submissionId: meta.submissionId,
+          problemId: meta.problemId,
+          message: submitErr?.message || String(submitErr),
+        });
+        code = await fetchSourceCode(meta.submissionId);
+      }
+
+      sendSubmissionMessage(meta, code, "status-page-button");
+      processedSubmissionIds.add(meta.submissionId);
+      setUploadButtonState(meta.submissionId, "done");
+      syncButtonUI();
+    } catch (err) {
+      console.warn(
+        "[AlgoNotion] Failed to fetch source for",
+        meta.submissionId,
+        err?.message || err,
+      );
+      console.error("[AlgoNotion] Source fetch error detail:", err);
+      setUploadButtonState(meta.submissionId, "failed");
+      syncButtonUI();
+    }
+  });
+
+  resultCell.appendChild(button);
+  syncButtonUI();
+}
+
+function processSubmitPage() {
+  const meta = extractSubmitPageMeta();
+  if (!meta) {
+    console.warn("[AlgoNotion] Submit page meta could not be parsed.");
+    return;
+  }
+
+  const code = extractSubmitPageCode();
+  console.log("[AlgoNotion] Submit page helper ready:", {
+    submissionId: meta.submissionId,
+    problemId: meta.problemId,
+    language: meta.language,
+    codeLength: code.length,
+  });
 }
 
 function isRowAccepted(row, colMap) {
@@ -127,9 +404,69 @@ function extractSubmissionMeta(row, colMap) {
  */
 async function fetchSourceCode(submissionId) {
   const url = `https://www.acmicpc.net/source/download/${submissionId}`;
-  const res = await fetch(url, { credentials: "include" });
-  if (!res.ok) throw new Error(`Source download failed: ${res.status}`);
-  return res.text();
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= SOURCE_FETCH_MAX_RETRIES; attempt++) {
+    console.log("[AlgoNotion] Fetching source code:", { submissionId, url, attempt });
+
+    try {
+      const res = await fetch(url, {
+        credentials: "include",
+        cache: "no-store",
+      });
+      const text = await res.text();
+      const trimmed = text.trim();
+      const contentType = res.headers.get("content-type");
+      const isHtmlResponse =
+        contentType?.includes("text/html") ||
+        /^<!doctype html/i.test(trimmed) ||
+        /^<html/i.test(trimmed);
+
+      console.log("[AlgoNotion] Source response:", {
+        submissionId,
+        attempt,
+        status: res.status,
+        ok: res.ok,
+        redirected: res.redirected,
+        finalUrl: res.url,
+        contentType,
+      });
+
+      console.log("[AlgoNotion] Source body:", {
+        submissionId,
+        attempt,
+        length: text.length,
+        preview: text.slice(0, 120),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Source download failed: ${res.status}`);
+      }
+
+      if (!trimmed) {
+        throw new Error("Source download returned an empty body");
+      }
+
+      if (isHtmlResponse) {
+        throw new Error("Source download returned HTML instead of source code");
+      }
+
+      return text;
+    } catch (err) {
+      lastError = err;
+      console.warn("[AlgoNotion] Source fetch attempt failed:", {
+        submissionId,
+        attempt,
+        message: err?.message || String(err),
+      });
+
+      if (attempt < SOURCE_FETCH_MAX_RETRIES) {
+        await sleep(SOURCE_FETCH_RETRY_DELAYS_MS[attempt - 1] ?? 3000);
+      }
+    }
+  }
+
+  throw lastError || new Error("Source fetch failed for an unknown reason");
 }
 
 /**
@@ -155,29 +492,8 @@ function pollStatusTable() {
 
     const meta = extractSubmissionMeta(row, colMap);
     if (!meta) return;
-    if (processedSubmissionIds.has(meta.submissionId)) return;
-
-    processedSubmissionIds.add(meta.submissionId);
-
-    (async () => {
-      try {
-        const code = await fetchSourceCode(meta.submissionId);
-        const payload = { ...meta, code };
-
-        const message = {
-          type: "BAEKJOON_AC_SUBMISSION",
-          payload,
-        };
-        chrome.runtime.sendMessage(message);
-      } catch (err) {
-        console.warn(
-          "[AlgoNotion] Failed to fetch source for",
-          meta.submissionId,
-          err,
-        );
-        processedSubmissionIds.delete(meta.submissionId);
-      }
-    })();
+    console.log("[AlgoNotion] Accepted row found:", meta);
+    ensureUploadButton(row, meta, colMap);
   });
 }
 
@@ -187,5 +503,9 @@ function startPolling() {
 }
 
 if (isBaekjoonStatusPage()) {
+  console.log("[AlgoNotion] Content script active on status page.");
   startPolling();
+} else if (isBaekjoonSubmitPage()) {
+  console.log("[AlgoNotion] Content script active on submit page.");
+  processSubmitPage();
 }
