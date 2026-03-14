@@ -232,6 +232,39 @@ function sendSubmissionMessage(meta, code, source) {
   });
 }
 
+function sendSubmissionMessageAsync(meta, code, source) {
+  return new Promise((resolve, reject) => {
+    const payload = { ...meta, code };
+    console.log("[AlgoNotion] Sending message to background:", {
+      source,
+      submissionId: meta.submissionId,
+      codeLength: code.length,
+      codePreview: code.slice(0, 120),
+    });
+
+    chrome.runtime.sendMessage(
+      {
+        type: "BAEKJOON_AC_SUBMISSION",
+        payload,
+      },
+      (response) => {
+        const runtimeError = chrome.runtime.lastError;
+        if (runtimeError) {
+          reject(new Error(runtimeError.message));
+          return;
+        }
+
+        if (!response?.ok) {
+          reject(new Error(response?.error || "Unknown background error"));
+          return;
+        }
+
+        resolve(response);
+      },
+    );
+  });
+}
+
 function getUploadButtonState(submissionId) {
   return uploadButtonStateBySubmissionId.get(submissionId) || "idle";
 }
@@ -313,7 +346,7 @@ function ensureUploadButton(row, meta, colMap) {
         code = await fetchSourceCode(meta.submissionId);
       }
 
-      sendSubmissionMessage(meta, code, "status-page-button");
+      await sendSubmissionMessageAsync(meta, code, "status-page-button");
       processedSubmissionIds.add(meta.submissionId);
       setUploadButtonState(meta.submissionId, "done");
       syncButtonUI();

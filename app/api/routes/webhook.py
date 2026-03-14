@@ -27,10 +27,10 @@ async def receive_webhook(payload: WebhookPayload) -> AnalysisResult:
     # Notion 저장은 응답 모델을 바꾸지 않고 비동기 처리만 수행
     try:
         await save_to_notion(payload, analysis)
-    except Exception:
-        # Notion 저장 실패로 전체 요청이 실패하지 않도록 예외를 삼킨다.
-        # 실제 서비스에서는 로깅/알림 시스템과 연동하는 것이 바람직하다.
-        pass
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Notion save failed: {e}") from e
 
     return analysis
 

@@ -10,6 +10,32 @@ from app.schemas.webhook import WebhookPayload
 
 
 logger = getLogger(__name__)
+NOTION_RICH_TEXT_LIMIT = 2000
+
+
+def _chunk_text(text: str, chunk_size: int = NOTION_RICH_TEXT_LIMIT) -> List[str]:
+    if not text:
+        return [""]
+    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+
+
+def _build_code_blocks(code: str, language: str) -> List[Dict[str, Any]]:
+    return [
+        {
+            "object": "block",
+            "type": "code",
+            "code": {
+                "language": language,
+                "rich_text": [
+                    {
+                        "type": "text",
+                        "text": {"content": chunk},
+                    }
+                ],
+            },
+        }
+        for chunk in _chunk_text(code)
+    ]
 
 
 def _build_properties(payload: WebhookPayload, analysis: AnalysisResult) -> Dict[str, Any]:
@@ -49,7 +75,7 @@ def _build_children(payload: WebhookPayload, analysis: AnalysisResult) -> List[D
     meta = payload.meta_info
     sub = payload.submission_info
 
-    return [
+    children = [
         # 🤖 AI 코드 리뷰
         {
             "object": "block",
@@ -124,33 +150,11 @@ def _build_children(payload: WebhookPayload, analysis: AnalysisResult) -> List[D
                 ]
             },
         },
-        {
-            "object": "block",
-            "type": "code",
-            "code": {
-                "language": meta.language,
-                "rich_text": [
-                    {
-                        "type": "text",
-                        "text": {"content": sub.code},
-                    }
-                ],
-            },
-        },
-        {
-            "object": "block",
-            "type": "code",
-            "code": {
-                "language": meta.language,
-                "rich_text": [
-                    {
-                        "type": "text",
-                        "text": {"content": analysis.better_code},
-                    }
-                ],
-            },
-        },
     ]
+
+    children.extend(_build_code_blocks(sub.code, meta.language))
+    children.extend(_build_code_blocks(analysis.better_code, meta.language))
+    return children
 
 
 async def save_to_notion(payload: WebhookPayload, analysis: AnalysisResult) -> None:
@@ -181,6 +185,8 @@ async def save_to_notion(payload: WebhookPayload, analysis: AnalysisResult) -> N
             getattr(e, "code", None),
             e.message,
         )
+        raise RuntimeError(f"Notion API error: {e.message}") from e
     except Exception as e:
         logger.exception("Notion 페이지 생성 중 예기치 못한 오류가 발생했습니다.")
+        raise
 

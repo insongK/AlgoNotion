@@ -26,6 +26,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           problemId: payload.problemId,
           payload,
         });
+        sendResponse({ ok: false, stage: 'validation', error: 'payload has no code' });
         return false;
       }
 
@@ -74,14 +75,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           await postToBackendWebhook(webhookUrl, webhookPayload);
           console.log('[AlgoNotion] [4/4] 백엔드 전송 완료.');
           console.log('[AlgoNotion] ─── AC 제출 처리 완료 ───');
+          sendResponse({ ok: true });
         } catch (err) {
           console.error('[AlgoNotion] ─── AC 제출 처리 실패 ───');
           console.error('[AlgoNotion]', err.message);
           console.error(err);
+          sendResponse({
+            ok: false,
+            stage: 'background',
+            error: err?.message || String(err),
+          });
         }
       })();
 
-      return false;
+      return true;
     }
     default:
       break;
