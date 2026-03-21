@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
+from app.errors import AppError
 from app.schemas.webhook import WebhookPayload
 from app.schemas.analysis import AnalysisResult
 from app.services.ai_service import analyze_submission
@@ -19,6 +20,8 @@ async def receive_webhook(payload: WebhookPayload) -> AnalysisResult:
     """
     try:
         analysis = await analyze_submission(payload)
+    except AppError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
     except HTTPException:
         raise
     except Exception as e:
@@ -27,6 +30,8 @@ async def receive_webhook(payload: WebhookPayload) -> AnalysisResult:
     # Notion 저장은 응답 모델을 바꾸지 않고 비동기 처리만 수행
     try:
         await save_to_notion(payload, analysis)
+    except AppError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
     except HTTPException:
         raise
     except Exception as e:

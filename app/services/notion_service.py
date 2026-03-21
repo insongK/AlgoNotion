@@ -5,12 +5,32 @@ from notion_client.errors import APIResponseError
 
 from app.clients.notion_client import get_notion_client
 from app.core.config import get_settings
+from app.errors import AppError, BadGatewayError, BadRequestError, ServiceUnavailableError, TooManyRequestsError
 from app.schemas.analysis import AnalysisResult
 from app.schemas.webhook import WebhookPayload
 
 
 logger = getLogger(__name__)
 NOTION_RICH_TEXT_LIMIT = 2000
+
+
+def _resolve_notion_credentials(payload: WebhookPayload) -> tuple[str, str]:
+    settings = get_settings()
+    request_settings = payload.notion_settings
+
+    if request_settings is not None:
+        if not request_settings.token:
+            raise BadRequestError("notion_settings.token is required")
+        if not request_settings.database_id:
+            raise BadRequestError("notion_settings.database_id is required")
+        return request_settings.token, request_settings.database_id
+
+    if not settings.notion_token:
+        raise ServiceUnavailableError("NOTION_TOKEN is not set in environment")
+    if not settings.notion_database_id:
+        raise ServiceUnavailableError("NOTION_DATABASE_ID is not set in environment")
+
+    return settings.notion_token, settings.notion_database_id
 
 
 def _chunk_text(text: str, chunk_size: int = NOTION_RICH_TEXT_LIMIT) -> List[str]:
@@ -38,7 +58,7 @@ def _build_code_blocks(code: str, language: str) -> List[Dict[str, Any]]:
     ]
 
 
-def _build_properties(payload: WebhookPayload, analysis: AnalysisResult) -> Dict[str, Any]:
+def _build_properties(payload: WebhookPayload) -> Dict[str, Any]:
     meta = payload.meta_info
     sub = payload.submission_info
 
@@ -46,7 +66,7 @@ def _build_properties(payload: WebhookPayload, analysis: AnalysisResult) -> Dict
     performance_text = f"{sub.time}ms / {sub.memory}KB"
 
     return {
-        "이름": {
+        "Name": {
             "title": [
                 {
                     "type": "text",
@@ -54,13 +74,13 @@ def _build_properties(payload: WebhookPayload, analysis: AnalysisResult) -> Dict
                 }
             ]
         },
-        "플랫폼": {
+        "Platform": {
             "select": {"name": payload.platform},
         },
-        "언어": {
+        "Language": {
             "select": {"name": meta.language},
         },
-        "성능": {
+        "Performance": {
             "rich_text": [
                 {
                     "type": "text",
@@ -83,7 +103,7 @@ def _build_children(payload: WebhookPayload, analysis: AnalysisResult) -> List[D
                 "rich_text": [
                     {
                         "type": "text",
-                        "text": {"content": "AI 코드 리뷰"},
+                        "text": {"content": "AI Code Review"},
                     }
                 ]
             },
@@ -95,7 +115,7 @@ def _build_children(payload: WebhookPayload, analysis: AnalysisResult) -> List[D
                 "rich_text": [
                     {
                         "type": "text",
-                        "text": {"content": f"접근: {analysis.approach}"},
+                        "text": {"content": f"Approach: {analysis.approach}"},
                     }
                 ]
             },
@@ -107,7 +127,7 @@ def _build_children(payload: WebhookPayload, analysis: AnalysisResult) -> List[D
                 "rich_text": [
                     {
                         "type": "text",
-                        "text": {"content": f"시간 복잡도: {analysis.time_complexity}"},
+                        "text": {"content": f"Time Complexity: {analysis.time_complexity}"},
                     }
                 ]
             },
@@ -119,7 +139,7 @@ def _build_children(payload: WebhookPayload, analysis: AnalysisResult) -> List[D
                 "rich_text": [
                     {
                         "type": "text",
-                        "text": {"content": f"개선점: {analysis.improvement}"},
+                        "text": {"content": f"Improvement: {analysis.improvement}"},
                     }
                 ]
             },
@@ -131,7 +151,7 @@ def _build_children(payload: WebhookPayload, analysis: AnalysisResult) -> List[D
                 "rich_text": [
                     {
                         "type": "text",
-                        "text": {"content": f"다음 추천 문제: {analysis.next_problem}"},
+                        "text": {"content": f"Next Problem: {analysis.next_problem}"},
                     }
                 ]
             },
@@ -143,7 +163,7 @@ def _build_children(payload: WebhookPayload, analysis: AnalysisResult) -> List[D
                 "rich_text": [
                     {
                         "type": "text",
-                        "text": {"content": "제출 코드 및 모범 답안"},
+                        "text": {"content": "Submitted Code and Better Version"},
                     }
                 ]
             },
@@ -156,16 +176,10 @@ def _build_children(payload: WebhookPayload, analysis: AnalysisResult) -> List[D
 
 
 async def save_to_notion(payload: WebhookPayload, analysis: AnalysisResult) -> None:
-    settings = get_settings()
-    notion_token = payload.notion_settings.token if payload.notion_settings else settings.notion_token
-    notion_database_id = payload.notion_settings.database_id if payload.notion_settings else settings.notion_database_id
-
-    if not notion_database_id:
-        logger.warning("NOTION_DATABASE_ID is not set; Notion 저장을 건너뜁니다.")
-        return
+    notion_token, notion_database_id = _resolve_notion_credentials(payload)
 
     client = get_notion_client(notion_token)
-    properties = _build_properties(payload, analysis)
+    properties = _build_properties(payload)
     children = _build_children(payload, analysis)
 
     try:
@@ -176,12 +190,18 @@ async def save_to_notion(payload: WebhookPayload, analysis: AnalysisResult) -> N
         )
     except APIResponseError as e:
         logger.exception(
-            "Notion API 응답 오류로 페이지 생성에 실패했습니다. status=%s, code=%s, message=%s",
+            "Notion page create failed. status=%s, code=%s, message=%s",
             e.status,
             getattr(e, "code", None),
             e.message,
         )
-        raise RuntimeError(f"Notion API error: {e.message}") from e
-    except Exception:
-        logger.exception("Notion 페이지 생성 중 예기치 못한 오류가 발생했습니다.")
+        if e.status == 429:
+            raise TooManyRequestsError(f"Notion API rate limit exceeded: {e.message}") from e
+        if 400 <= e.status < 500:
+            raise AppError(e.status, f"Notion API error: {e.message}") from e
+        raise BadGatewayError(f"Notion API error: {e.message}") from e
+    except AppError:
         raise
+    except Exception as e:
+        logger.exception("Unexpected error while creating Notion page.")
+        raise BadGatewayError("Unexpected error while saving to Notion") from e
