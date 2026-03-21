@@ -1,15 +1,15 @@
 from notion_client import AsyncClient
 
 from app.core.config import get_settings
+from app.errors import ServiceUnavailableError
 
 
-def get_notion_client() -> AsyncClient:
-    """
-    NOTION_TOKEN을 사용해 AsyncClient를 초기화하는 래퍼.
-    """
+def get_notion_client(token: str | None = None) -> AsyncClient:
     settings = get_settings()
-    if not settings.notion_token:
-        raise ValueError("NOTION_TOKEN is not set in environment")
+    notion_token = token or settings.notion_token
+    if not notion_token:
+        raise ServiceUnavailableError(
+            "NOTION_TOKEN is not set in environment and no per-request token was provided"
+        )
 
-    return AsyncClient(auth=settings.notion_token)
-
+    return AsyncClient(auth=notion_token)

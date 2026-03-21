@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
+from app.errors import BadRequestError, ServiceUnavailableError, TooManyRequestsError
 from app.schemas.analysis import AnalysisResult
 
 
@@ -9,7 +10,7 @@ def _build_valid_payload() -> dict:
     return {
         "platform": "baekjoon",
         "meta_info": {
-            "title": "두 수의 합",
+            "title": "Two Sum",
             "problem_id": "3273",
             "link": "https://www.acmicpc.net/problem/3273",
             "level": "silver",
@@ -28,28 +29,20 @@ def test_webhook_success_returns_analysis_result(
     mock_create_structured_analysis: AsyncMock,
     client: TestClient,
 ) -> None:
-    """
-    /webhook에 정상 JSON을 보내면 200 OK와 AnalysisResult 스펙 구조가 응답되는지 검증.
-    OpenAI 호출은 mock 처리한다.
-    """
     dummy_result = AnalysisResult(
-        approach="두 포인터를 사용한 선형 탐색입니다.",
+        approach="Use two pointers on a sorted array.",
         time_complexity="O(N)",
-        improvement="입출력 최적화와 예외 상황 처리 코드를 추가할 수 있습니다.",
-        next_problem="baekjoon 1253 좋다",
+        improvement="Handle edge cases explicitly.",
+        next_problem="baekjoon 1253 Good",
         better_code="print('better code')",
     )
     mock_create_structured_analysis.return_value = dummy_result
 
-    payload = _build_valid_payload()
-
-    response = client.post("/webhook", json=payload)
+    with patch("app.api.routes.webhook.save_to_notion", new=AsyncMock()):
+        response = client.post("/webhook", json=_build_valid_payload())
 
     assert response.status_code == 200
-    body = response.json()
-
-    # Pydantic으로 한번 더 검증
-    parsed = AnalysisResult(**body)
+    parsed = AnalysisResult(**response.json())
     assert parsed.approach == dummy_result.approach
     assert parsed.time_complexity == dummy_result.time_complexity
     assert parsed.improvement == dummy_result.improvement
@@ -58,13 +51,9 @@ def test_webhook_success_returns_analysis_result(
 
 
 def test_webhook_invalid_payload_returns_422(client: TestClient) -> None:
-    """
-    필수 필드가 누락된 JSON을 보냈을 때 422 Unprocessable Entity가 나는지 검증.
-    (예: platform 누락)
-    """
     invalid_payload = {
         "meta_info": {
-            "title": "두 수의 합",
+            "title": "Two Sum",
             "problem_id": "3273",
             "language": "python",
         },
@@ -77,3 +66,65 @@ def test_webhook_invalid_payload_returns_422(client: TestClient) -> None:
 
     assert response.status_code == 422
 
+
+@patch("app.api.routes.webhook.analyze_submission", new_callable=AsyncMock)
+def test_webhook_openai_config_error_returns_503(
+    mock_analyze_submission: AsyncMock,
+    client: TestClient,
+) -> None:
+    mock_analyze_submission.side_effect = ServiceUnavailableError(
+        "OPENAI_API_KEY is not set in environment"
+    )
+
+    response = client.post("/webhook", json=_build_valid_payload())
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "OPENAI_API_KEY is not set in environment"
+
+
+@patch("app.api.routes.webhook.analyze_submission", new_callable=AsyncMock)
+def test_webhook_notion_request_error_returns_400(
+    mock_analyze_submission: AsyncMock,
+    client: TestClient,
+) -> None:
+    mock_analyze_submission.return_value = AnalysisResult(
+        approach="Use two pointers on a sorted array.",
+        time_complexity="O(N)",
+        improvement="Handle edge cases explicitly.",
+        next_problem="baekjoon 1253 Good",
+        better_code="print('better code')",
+    )
+
+    with patch(
+        "app.api.routes.webhook.save_to_notion",
+        new=AsyncMock(side_effect=BadRequestError("notion_settings.database_id is required")),
+    ):
+        payload = _build_valid_payload()
+        payload["notion_settings"] = {"token": "secret", "database_id": ""}
+        response = client.post("/webhook", json=payload)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "notion_settings.database_id is required"
+
+
+@patch("app.api.routes.webhook.analyze_submission", new_callable=AsyncMock)
+def test_webhook_notion_rate_limit_returns_429(
+    mock_analyze_submission: AsyncMock,
+    client: TestClient,
+) -> None:
+    mock_analyze_submission.return_value = AnalysisResult(
+        approach="Use two pointers on a sorted array.",
+        time_complexity="O(N)",
+        improvement="Handle edge cases explicitly.",
+        next_problem="baekjoon 1253 Good",
+        better_code="print('better code')",
+    )
+
+    with patch(
+        "app.api.routes.webhook.save_to_notion",
+        new=AsyncMock(side_effect=TooManyRequestsError("Notion API rate limit exceeded")),
+    ):
+        response = client.post("/webhook", json=_build_valid_payload())
+
+    assert response.status_code == 429
+    assert response.json()["detail"] == "Notion API rate limit exceeded"
